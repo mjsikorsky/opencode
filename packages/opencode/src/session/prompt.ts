@@ -755,7 +755,7 @@ export namespace SessionPrompt {
           always: ["*"],
         })
 
-        const result = await execute(args, opts)
+        const result = await MCP.withOpenCodeSession(ctx.sessionID, () => execute(args, opts))
 
         await Plugin.trigger(
           "tool.execute.after",
