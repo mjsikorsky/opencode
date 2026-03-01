@@ -57,7 +57,7 @@ export namespace MCP {
     }
   }
 
-  const fetchWithOpenCodeSession: typeof fetch = async (input, init) => {
+  const fetchWithOpenCodeSession = (async (input, init) => {
     const headers = new Headers(init?.headers)
 
     const sessionID = currentOpenCodeSessionId()
@@ -66,7 +66,9 @@ export namespace MCP {
     }
 
     return fetch(input, { ...(init ?? {}), headers })
-  }
+  }) as typeof fetch
+
+  fetchWithOpenCodeSession.preconnect = fetch.preconnect
 
   export const Resource = z
     .object({
