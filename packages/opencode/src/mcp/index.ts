@@ -15,6 +15,7 @@ import { NamedError } from "@opencode-ai/util/error"
 import z from "zod/v4"
 import { Instance } from "../project/instance"
 import { Installation } from "../installation"
+import { Context } from "@/util/context"
 import { withTimeout } from "@/util/timeout"
 import { McpOAuthProvider } from "./oauth-provider"
 import { McpOAuthCallback } from "./oauth-callback"
@@ -27,6 +28,45 @@ import open from "open"
 export namespace MCP {
   const log = Log.create({ service: "mcp" })
   const DEFAULT_TIMEOUT = 30_000
+
+  // ---------------------------------------------------------------------------
+  // LEGION: Propagate OpenCode session identity to remote MCP servers
+  // ---------------------------------------------------------------------------
+  // This enables deterministic governance at the tool boundary without requiring
+  // the LLM to carry any run/session identifiers in tool arguments.
+  //
+  // Mechanism:
+  // - `SessionPrompt.resolveTools()` wraps MCP tool execution in `withOpenCodeSession()`
+  // - Our MCP transport fetch wrapper injects the header on every outbound request
+  //
+  // Header:
+  // - X-Legion-OpenCode-Session-Id: <OpenCode sessionID>
+  // ---------------------------------------------------------------------------
+
+  const OpenCodeSessionContext = Context.create<{ sessionID: string }>("mcp.openCodeSession")
+
+  export function withOpenCodeSession<R>(sessionID: string, fn: () => R): R {
+    return OpenCodeSessionContext.provide({ sessionID }, fn)
+  }
+
+  function currentOpenCodeSessionId(): string | undefined {
+    try {
+      return OpenCodeSessionContext.use().sessionID
+    } catch {
+      return undefined
+    }
+  }
+
+  const fetchWithOpenCodeSession: typeof fetch = async (input, init) => {
+    const headers = new Headers(init?.headers)
+
+    const sessionID = currentOpenCodeSessionId()
+    if (sessionID) {
+      headers.set("X-Legion-OpenCode-Session-Id", sessionID)
+    }
+
+    return fetch(input, { ...(init ?? {}), headers })
+  }
 
   export const Resource = z
     .object({
@@ -331,6 +371,7 @@ export namespace MCP {
           transport: new StreamableHTTPClientTransport(new URL(mcp.url), {
             authProvider,
             requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            fetch: fetchWithOpenCodeSession,
           }),
         },
         {
@@ -338,6 +379,7 @@ export namespace MCP {
           transport: new SSEClientTransport(new URL(mcp.url), {
             authProvider,
             requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            fetch: fetchWithOpenCodeSession,
           }),
         },
       ]

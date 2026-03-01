@@ -760,11 +760,16 @@ export const SessionRoutes = lazy(() =>
       ),
       validator("json", SessionPrompt.PromptInput.omit({ sessionID: true })),
       async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+
+        // Ship-grade: validate session existence BEFORE starting a streaming 200 response.
+        // This ensures stale sessionIDs produce a real 404 so clients can auto-recover.
+        await Session.get(sessionID)
+
         c.status(200)
         c.header("Content-Type", "application/json")
         return stream(c, async (stream) => {
-          const sessionID = c.req.valid("param").sessionID
-          const body = c.req.valid("json")
           const msg = await SessionPrompt.prompt({ ...body, sessionID })
           stream.write(JSON.stringify(msg))
         })
@@ -792,11 +797,15 @@ export const SessionRoutes = lazy(() =>
       ),
       validator("json", SessionPrompt.PromptInput.omit({ sessionID: true })),
       async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+
+        // Same guard as /:sessionID/message: do not respond 204 if the session doesn't exist.
+        await Session.get(sessionID)
+
         c.status(204)
         c.header("Content-Type", "application/json")
         return stream(c, async () => {
-          const sessionID = c.req.valid("param").sessionID
-          const body = c.req.valid("json")
           SessionPrompt.prompt({ ...body, sessionID })
         })
       },
