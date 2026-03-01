@@ -806,7 +806,12 @@ export const SessionRoutes = lazy(() =>
         c.status(204)
         c.header("Content-Type", "application/json")
         return stream(c, async () => {
-          SessionPrompt.prompt({ ...body, sessionID })
+          void SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
+            log.error("prompt_async failed", {
+              sessionID,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          })
         })
       },
     )
