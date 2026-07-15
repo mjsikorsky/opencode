@@ -612,8 +612,26 @@ export namespace MCP {
     const s = await state()
     const cfg = await Config.get()
     const config = cfg.mcp ?? {}
-    const clientsSnapshot = await clients()
     const defaultTimeout = cfg.experimental?.mcp_timeout
+
+    // LEGION: failed remote clients must not be permanent tombstones. A
+    // server-side restart (e.g. mcp-server redeploy) kills the MCP session;
+    // the next listTools() fails, and without this reconnect the process
+    // serves ZERO MCP tools until the container restarts (lived on staging
+    // 2026-07-15: every backend deploy silently disarmed the agent).
+    // One reconnect attempt per failed client per tools() call, bounded by
+    // the existing connect() timeout.
+    for (const [clientName, status] of Object.entries(s.status)) {
+      if (status?.status !== "failed") continue
+      const entry = config[clientName]
+      if (!entry || !isMcpConfigured(entry) || entry.enabled === false) continue
+      log.info("reconnecting failed mcp client", { clientName })
+      await connect(clientName).catch((error) => {
+        log.error("mcp reconnect failed", { clientName, error })
+      })
+    }
+
+    const clientsSnapshot = await clients()
 
     const connectedClients = Object.entries(clientsSnapshot).filter(
       ([clientName]) => s.status[clientName]?.status === "connected",
@@ -621,8 +639,7 @@ export namespace MCP {
 
     const toolsResults = await Promise.all(
       connectedClients.map(async ([clientName, client]) => {
-        const toolsResult = await client.listTools().catch((e) => {
-          log.error("failed to get tools", { clientName, error: e.message })
+        const markFailed = (e: unknown) => {
           const failedStatus = {
             status: "failed" as const,
             error: e instanceof Error ? e.message : String(e),
@@ -630,7 +647,30 @@ export namespace MCP {
           s.status[clientName] = failedStatus
           delete s.clients[clientName]
           return undefined
+        }
+        let toolsResult = await client.listTools().catch((e) => {
+          log.error("failed to get tools", { clientName, error: e.message })
+          return markFailed(e)
         })
+        // LEGION: same-turn recovery — a "connected" client whose server-side
+        // session died fails right here; reconnect and retry once so THIS
+        // turn still gets its tools instead of only the next one.
+        if (toolsResult === undefined) {
+          log.info("reconnecting mcp client after listTools failure", { clientName })
+          await connect(clientName).catch((error) => {
+            log.error("mcp same-turn reconnect failed", { clientName, error })
+          })
+          const fresh = (await clients())[clientName]
+          if (fresh && s.status[clientName]?.status === "connected") {
+            toolsResult = await fresh.listTools().catch((e) => {
+              log.error("failed to get tools after reconnect", { clientName, error: e.message })
+              return markFailed(e)
+            })
+            if (toolsResult !== undefined) {
+              return { clientName, client: fresh, toolsResult }
+            }
+          }
+        }
         return { clientName, client, toolsResult }
       }),
     )
